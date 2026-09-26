@@ -10,9 +10,26 @@ import type { GenerationContext } from "../lib/state-store-sweeper";
  * a login that has started and not yet settled, and none of it reads or writes a stored
  * credential. `index.ts` re-exports the two public names, so existing importers are unaffected.
  */
-export const loginState = new Map<string, { error?: string; done: boolean }>();
+export const loginState = new Map<string, { error?: string; done: boolean; hint?: LoginFlowHint }>();
 export const loginAbort = new Map<string, { controller: AbortController; flowId?: string }>();
 export const kiroLoginSettling = new Set<string>();
+
+/**
+ * How the operator is expected to finish a login that is still in flight.
+ *
+ * Republished on every `onAuth`, because a provider may move a LIVE flow from one
+ * affordance to another. Meta Muse does exactly that: `loginMetaMuse` starts a
+ * device grant, and when that grant fails it prompts for a hand-entered Muse Code
+ * key instead — a second `onAuth` with a different URL, different prose, and no
+ * device code. Only the first hint reaches `startLoginFlow`'s promise, so without
+ * a live copy here the dashboard keeps rendering the device code of a grant that
+ * is no longer running.
+ */
+export interface LoginFlowHint {
+  url?: string;
+  deviceCode?: string;
+  instructions?: string;
+}
 
 /** Pending paste for a login in progress: either a waiter or a stashed early submission. */
 export interface ManualCodeSlot {
@@ -36,6 +53,33 @@ export function reconcileOAuthFlowState(context: GenerationContext): number {
   }
   lastOAuthFlowReconciledGeneration = context.generation;
   return removed;
+}
+
+/**
+ * Record the latest hint for a login that has not settled.
+ *
+ * Mutates the existing state object rather than replacing it, so a terminal
+ * `loginState.set(provider, { done: true })` in `startLoginFlow`/`cancelLoginFlow`
+ * drops the hint with no extra bookkeeping: a settled flow has nothing left for
+ * the operator to do, and a stale device code outliving its grant is the bug this
+ * exists to prevent. Empty fields are omitted so a later hint that carries no
+ * device code reads as "no device code", not as an unchanged one.
+ */
+export function publishLoginHint(provider: string, hint: LoginFlowHint): void {
+  const state = loginState.get(provider);
+  if (!state || state.done) return;
+  state.hint = {
+    ...(hint.url ? { url: hint.url } : {}),
+    ...(hint.deviceCode ? { deviceCode: hint.deviceCode } : {}),
+    ...(hint.instructions ? { instructions: hint.instructions } : {}),
+  };
+}
+
+/** The live hint for an in-flight login, or undefined once it has settled. */
+export function liveLoginHint(provider: string): LoginFlowHint | undefined {
+  const state = loginState.get(provider);
+  if (!state || state.done || !state.hint) return undefined;
+  return state.hint;
 }
 
 export function clearManualCodeSlot(provider: string): void {

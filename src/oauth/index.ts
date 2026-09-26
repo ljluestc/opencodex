@@ -53,7 +53,7 @@ import { resolveProviderTransport } from "../providers/xai-transport";
 import { detectClaudeCodeToken, detectGrokCliToken, hasComparableGrokIdentity, isSameGrokIdentity, shouldAdoptGrokGeneration } from "./local-token-detect";
 import { logOAuthEvent } from "./log";
 import { captureConfigGeneration, sweepExpiredOnWrite } from "../lib/state-store-sweeper";
-import { clearManualCodeSlot, ensureManualCodeSlot, kiroLoginSettling, loginAbort, loginState, waitForManualLoginCode } from "./login-flow-state";
+import { clearManualCodeSlot, ensureManualCodeSlot, kiroLoginSettling, liveLoginHint, loginAbort, loginState, publishLoginHint, waitForManualLoginCode } from "./login-flow-state";
 export { reconcileOAuthFlowState, submitManualLoginCode } from "./login-flow-state";
 import { randomUUID } from "node:crypto";
 export {
@@ -1764,7 +1764,7 @@ export interface OAuthAccountSummary {
  * the config at its request boundary and resolves the policy there with `emailMaskingEnabled`.
  * The default masks, so every existing caller keeps today's behaviour.
  */
-export function getLoginStatus(provider: string, maskEmails = true): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[] } {
+export function getLoginStatus(provider: string, maskEmails = true): { loggedIn: boolean; email?: string; source?: OAuthCredentials["source"]; error?: string; done: boolean; activeAccountId?: string; accounts?: OAuthAccountSummary[]; url?: string; deviceCode?: string; instructions?: string } {
   const cred = getCredential(provider);
   const st = loginState.get(provider);
   const set = getAccountSet(provider);
@@ -1789,6 +1789,12 @@ export function getLoginStatus(provider: string, maskEmails = true): { loggedIn:
   // (local-token-detect.ts), never by over-reporting login state here.
   const activeNeedsReauth = set?.accounts
     .find(a => a.id === set.activeAccountId)?.needsReauth === true;
+  // The live hint, for a flow that has started and not settled. It is what makes a device
+  // grant finishable from a client that only polls: the first `onAuth` reaches the caller of
+  // startLoginFlow, every later one reaches only here. Tokens never pass through — a device
+  // code is the short string the user types into the vendor's page, not a credential, and the
+  // opaque `device_code` the poll uses stays inside the provider module.
+  const hint = liveLoginHint(provider);
   return {
     loggedIn: !!cred && !activeNeedsReauth,
     email: projectEmail(cred?.email, maskEmails) ?? undefined,
@@ -1796,6 +1802,7 @@ export function getLoginStatus(provider: string, maskEmails = true): { loggedIn:
     error: st?.error,
     done: st?.done ?? false,
     ...(set ? { activeAccountId: set.activeAccountId, accounts } : {}),
+    ...(hint ?? {}),
   };
 }
 
@@ -1849,6 +1856,12 @@ export async function startLoginFlow(
     let urlResolved = false;
     const ctrl: OAuthController = {
       onAuth: ({ url, instructions, deviceCode }) => {
+        // Record BEFORE resolving, and on every call rather than only the first. The promise
+        // carries one hint to the caller that started the flow; a provider that transitions a
+        // long-running flow to a different affordance (Meta Muse: device grant -> pasted Muse
+        // Code key) has no other way to reach a client that is already polling status. The
+        // ownership check keeps a superseded flow's late hint out of its replacement's state.
+        if (loginAbort.get(provider)?.controller === abort) publishLoginHint(provider, { url, instructions, deviceCode });
         urlResolved = true;
         resolve({ url, instructions, deviceCode });
       },

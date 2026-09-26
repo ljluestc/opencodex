@@ -123,8 +123,16 @@ export function useAddProviderOAuth({
         await new Promise(r => setTimeout(r, OAUTH_LOGIN_POLL_INTERVAL_MS));
         if (!aliveRef.current || !isCurrent()) return;
         const sRes = await fetch(`${apiBase}/api/oauth/status?provider=${providerId}`).catch(() => null);
-        const s = sRes ? await readJsonIfOk<{ loggedIn?: boolean; error?: string }>(sRes) : null;
+        const s = sRes ? await readJsonIfOk<{ loggedIn?: boolean; error?: string; url?: string; deviceCode?: string; instructions?: string }>(sRes) : null;
         if (!aliveRef.current || !isCurrent()) return;
+        // Re-project the live hint every poll. The POST response carries only the FIRST
+        // affordance the provider published; a flow that later moves to another one (Meta
+        // Muse falls back from its device grant to a pasted Muse Code key) reports that
+        // through status alone, and rendering the superseded hint asks the operator to
+        // finish a step that is no longer running.
+        if (s && (s.url || s.deviceCode || s.instructions)) {
+          setOauthUrl(s.url ?? "", providerId, s.deviceCode, s.instructions);
+        }
         if (s?.error) {
           activeProvidersRef.current.delete(providerId);
           setOauthMsgTone("warn");

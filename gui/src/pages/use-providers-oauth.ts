@@ -130,11 +130,23 @@ export function useProvidersOAuth({
         await new Promise(r => setTimeout(r, 2000));
         if (oauthLoginGenerationRef.current!.get(provider) !== generation || !aliveRef.current) return;
         const sRes = await fetch(`${apiBase}/api/oauth/status?provider=${provider}`).catch(() => null);
-        const s: (OAuthStatus & { accounts?: OAuthAccount[]; activeAccountId?: string | null }) | null = sRes
-          ? ((await readJsonIfOk<OAuthStatus & { accounts?: OAuthAccount[]; activeAccountId?: string | null }>(sRes)) ?? null)
-          : null;
+        type StatusPayload = OAuthStatus & {
+          accounts?: OAuthAccount[];
+          activeAccountId?: string | null;
+          url?: string;
+          deviceCode?: string;
+          instructions?: string;
+        };
+        const s: StatusPayload | null = sRes ? ((await readJsonIfOk<StatusPayload>(sRes)) ?? null) : null;
         if (!aliveRef.current || oauthLoginGenerationRef.current!.get(provider) !== generation) return;
         if (!s) continue;
+        // Same live-hint projection as the add-provider modal: the POST response holds only
+        // the first affordance, and a provider that transitions an in-flight login (Meta
+        // Muse: device grant -> pasted Muse Code key) publishes the replacement through
+        // status. Without this the workspace panel keeps the device code of a dead grant.
+        if (s.url || s.deviceCode || s.instructions) {
+          setLoginInfo({ provider, url: s.url, instructions: s.instructions, deviceCode: s.deviceCode });
+        }
         if (s.error) {
           setOauthStatus(prev => ({ ...prev, [provider]: s }));
           const cancelled = /cancel/i.test(s.error);

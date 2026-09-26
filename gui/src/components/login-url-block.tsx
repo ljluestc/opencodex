@@ -74,6 +74,25 @@ export type LoginHintPaste = {
 };
 
 /**
+ * Whether the manual callback/code paste belongs on screen for this hint.
+ *
+ * A device grant has no callback to paste: the operator types the device code into
+ * the vendor's verification page and the proxy settles the login by polling. Showing
+ * the paste field anyway told a user who had just approved a Meta Muse code that
+ * OpenCodex was still waiting on them, for a step that does not exist in that flow.
+ *
+ * It stays available for authorization-code providers, which is where it is the only
+ * way in when the browser cannot reach the loopback callback (remote GUI, SSH,
+ * blocked localhost) — and it returns for a flow that leaves device mode, which Meta
+ * Muse does when a failed grant falls back to a hand-entered Muse Code key.
+ *
+ * Extracted from the JSX so the gate is testable without a DOM.
+ */
+export function shouldShowLoginPaste(hint: LoginHintData, paste?: LoginHintPaste): boolean {
+  return paste !== undefined && !hint.deviceCode;
+}
+
+/**
  * The single renderer for a login in progress, on every surface that can start
  * one: the provider workspace panel, the add-provider modal, and the Codex
  * account modal.
@@ -86,7 +105,8 @@ export type LoginHintPaste = {
  *
  * Order is deliberate: the device code first because it is the short thing a
  * human has to type, then the URL, then any provider prose, then the paste
- * fallback for when the browser cannot reach the loopback callback.
+ * fallback for when the browser cannot reach the loopback callback — which a
+ * device grant never needs, and therefore never shows (shouldShowLoginPaste).
  */
 export function LoginHint({ hint, paste }: { hint: LoginHintData; paste?: LoginHintPaste }) {
   const t = useT();
@@ -94,9 +114,10 @@ export function LoginHint({ hint, paste }: { hint: LoginHintData; paste?: LoginH
 
   const deviceCode = hint.deviceCode ?? "";
   const url = hint.url ?? "";
+  const showPaste = shouldShowLoginPaste(hint, paste);
   // A device flow may carry no URL at all, so this must not reuse LoginUrlBlock's
   // "empty url means render nothing" rule: the code alone is still actionable.
-  if (!deviceCode && !url && !hint.instructions && !paste) return null;
+  if (!deviceCode && !url && !hint.instructions && !showPaste) return null;
 
   const deviceOutcome = deviceCopy.outcomeFor(deviceCode);
   const deviceCopyLabel = deviceOutcome === "copied"
@@ -119,7 +140,7 @@ export function LoginHint({ hint, paste }: { hint: LoginHintData; paste?: LoginH
       )}
       <LoginUrlBlock url={url} />
       {hint.instructions && <div className="muted text-label">{hint.instructions}</div>}
-      {paste && (
+      {showPaste && paste && (
         <div className="login-hint-paste">
           <div className="muted text-label">{t("prov.pasteRedirectHint")}</div>
           <div className="login-hint-paste-row">
